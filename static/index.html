@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plano CV — Debug Console</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 20px; color: #1a1a2e; }
+  h1 { font-size: 22px; border-bottom: 3px solid #2E5FAC; padding-bottom: 10px; }
+  h2 { font-size: 17px; color: #2E5FAC; margin-top: 40px; }
+  .card { background: #f7f9fc; border: 1px solid #d8e1ee; border-radius: 8px; padding: 18px; margin-bottom: 10px; }
+  input[type=file], input[type=text], input[type=number] { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; margin-right: 8px; }
+  button { background: #2E5FAC; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #1F3864; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  canvas { max-width: 100%; border: 1px solid #ccc; margin-top: 10px; display: block; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { border: 1px solid #d8e1ee; padding: 6px 10px; text-align: left; }
+  th { background: #1F3864; color: white; }
+  .sim-good { color: #2D7D46; font-weight: bold; }
+  .sim-mid { color: #C55A11; font-weight: bold; }
+  .sim-bad { color: #C0392B; font-weight: bold; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: bold; color: white; }
+  .pill-matched { background: #2D7D46; }
+  .pill-missing { background: #C55A11; }
+  .pill-wrong { background: #C0392B; }
+  .pill-unexpected { background: #6B3FA0; }
+  #refList { margin-top: 10px; font-size: 13px; }
+  .ref-item { display: inline-block; background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px 10px; margin: 3px; }
+  .score { font-size: 28px; font-weight: bold; }
+  pre { background: #1a1a2e; color: #d8e1ee; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 300px; }
+</style>
+</head>
+<body>
+
+<h1>Plano CV — Minimal Debug Console</h1>
+<p style="color:#5A6478">Throwaway frontend. No auth, no roles — just enough to visually verify the CV pipeline.</p>
+
+<!-- SECTION 1 -->
+<h2>1. Reference Products</h2>
+<div class="card">
+  <input type="file" id="refImg" accept="image/*">
+  <input type="text" id="refName" placeholder="Product name (e.g. Coke)">
+  <button onclick="addReferenceProduct()">Add Product</button>
+  <div id="refList"></div>
+</div>
+
+<!-- SECTION 2 -->
+<h2>2. Generate Planogram from Reference Shelf Image</h2>
+<div class="card">
+  <input type="file" id="planoImg" accept="image/*">
+  <button onclick="generatePlanogram()">Generate</button>
+  <div id="planoStatus"></div>
+  <canvas id="planoCanvas"></canvas>
+  <div id="planoTableWrap"></div>
+</div>
+
+<!-- SECTION 3 -->
+<h2>3. Run Compliance Check</h2>
+<div class="card">
+  <div>Planogram ID: <input type="text" id="planogramIdInput" placeholder="auto-filled after step 2" style="width:320px"></div>
+  <br>
+  <input type="file" id="checkImg" accept="image/*">
+  <button onclick="runComplianceCheck()">Run Check</button>
+  <div id="checkStatus"></div>
+  <div id="scoreDisplay"></div>
+  <canvas id="checkCanvas"></canvas>
+  <div id="checkResultsWrap"></div>
+</div>
+
+<!-- SECTION 4 -->
+<h2>4. Debug Trace (raw pipeline counts for any image)</h2>
+<div class="card">
+  <input type="file" id="traceImg" accept="image/*">
+  <input type="number" id="traceThreshold" value="0.55" step="0.05" style="width:70px" title="match threshold">
+  <button onclick="runDebugTrace()">Trace</button>
+  <pre id="traceOutput">Output will appear here...</pre>
+</div>
+
+<script>
+const API = "/api";
+let lastPlanogramId = null;
+
+function simClass(sim) {
+  if (sim >= 0.75) return "sim-good";
+  if (sim >= 0.6) return "sim-mid";
+  return "sim-bad";
+}
+
+async function addReferenceProduct() {
+  const fileInput = document.getElementById("refImg");
+  const name = document.getElementById("refName").value.trim();
+  if (!fileInput.files[0] || !name) { alert("Select an image and enter a name"); return; }
+
+  const form = new FormData();
+  form.append("image", fileInput.files[0]);
+  form.append("name", name);
+
+  const res = await fetch(`${API}/reference-products`, { method: "POST", body: form });
+  if (!res.ok) { alert("Failed: " + await res.text()); return; }
+  document.getElementById("refName").value = "";
+  fileInput.value = "";
+  loadReferenceProducts();
+}
+
+async function loadReferenceProducts() {
+  const res = await fetch(`${API}/reference-products`);
+  const products = await res.json();
+  const el = document.getElementById("refList");
+  el.innerHTML = products.map(p => `<span class="ref-item">${p.name}</span>`).join(" ");
+}
+
+function drawBoxes(canvas, img, items, getBbox, getLabel, getColor) {
+  const ctx = canvas.getContext("2d");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  ctx.drawImage(img, 0, 0);
+
+  const drawnLabels = [];
+  items.forEach(item => {
+    const bbox = getBbox(item);
+    if (!bbox) return;
+    const [x1, y1, x2, y2] = bbox;
+    const color = getColor(item);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    const label = getLabel(item);
+    let labelY = Math.max(10, y1 - 6);
+    for (const [px, py] of drawnLabels) {
+      if (Math.abs(x1 - px) < 70 && Math.abs(labelY - py) < 14) labelY -= 14;
+    }
+    ctx.font = "bold 13px Arial";
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, labelY - 12, textWidth + 8, 16);
+    ctx.fillStyle = "white";
+    ctx.fillText(label, x1 + 4, labelY);
+    drawnLabels.push([x1, labelY]);
+  });
+}
+
+async function generatePlanogram() {
+  const fileInput = document.getElementById("planoImg");
+  if (!fileInput.files[0]) { alert("Select a reference shelf image"); return; }
+
+  document.getElementById("planoStatus").innerText = "Processing...";
+  const form = new FormData();
+  form.append("image", fileInput.files[0]);
+
+  const res = await fetch(`${API}/planogram/generate`, { method: "POST", body: form });
+  if (!res.ok) { document.getElementById("planoStatus").innerText = "Failed: " + await res.text(); return; }
+  const data = await res.json();
+
+  lastPlanogramId = data.planogram_id;
+  document.getElementById("planogramIdInput").value = data.planogram_id;
+  document.getElementById("planoStatus").innerText =
+    `planogram_id=${data.planogram_id} | YOLO found ${data.total_yolo_detections} boxes | accepted ${data.accepted_count} | rejected ${data.rejected_count}`;
+
+  const img = new Image();
+  img.onload = () => {
+    drawBoxes(document.getElementById("planoCanvas"), img, data.expected_items,
+      it => it.bbox,
+      it => `${it.product_name} ${(it.similarity*100).toFixed(0)}%`,
+      it => it.similarity >= 0.75 ? "#2D7D46" : "#C55A11"
+    );
+  };
+  img.src = URL.createObjectURL(fileInput.files[0]);
+
+  const rows = data.expected_items.map(it =>
+    `<tr><td>${it.product_name}</td><td class="${simClass(it.similarity)}">${(it.similarity*100).toFixed(1)}%</td>
+     <td>[${it.bbox.map(n=>n.toFixed(0)).join(", ")}]</td></tr>`
+  ).join("");
+  document.getElementById("planoTableWrap").innerHTML =
+    `<table><tr><th>Product</th><th>Similarity</th><th>BBox</th></tr>${rows}</table>`;
+}
+
+async function runComplianceCheck() {
+  const fileInput = document.getElementById("checkImg");
+  const planogramId = document.getElementById("planogramIdInput").value.trim();
+  if (!fileInput.files[0] || !planogramId) { alert("Select an image and ensure a planogram_id is set"); return; }
+
+  document.getElementById("checkStatus").innerText = "Processing...";
+  const form = new FormData();
+  form.append("image", fileInput.files[0]);
+  form.append("planogram_id", planogramId);
+
+  const res = await fetch(`${API}/compliance/check`, { method: "POST", body: form });
+  if (!res.ok) { document.getElementById("checkStatus").innerText = "Failed: " + await res.text(); return; }
+  const data = await res.json();
+
+  document.getElementById("checkStatus").innerText =
+    `Expected ${data.total_expected} | Detected on shelf ${data.total_detected_on_shelf}`;
+  document.getElementById("scoreDisplay").innerHTML = `<span class="score">${data.overall_score}%</span> overall match`;
+
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.getElementById("checkCanvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+  };
+  img.src = "data:image/jpeg;base64," + data.annotated_image_base64;
+
+  let html = "";
+  if (data.matched.length) html += `<h3><span class="pill pill-matched">MATCHED (${data.matched.length})</span></h3>` +
+    "<table><tr><th>Product</th><th>Similarity</th></tr>" +
+    data.matched.map(m => `<tr><td>${m.product_name}</td><td class="${simClass(m.similarity)}">${(m.similarity*100).toFixed(1)}%</td></tr>`).join("") + "</table>";
+  if (data.missing.length) html += `<h3><span class="pill pill-missing">MISSING (${data.missing.length})</span></h3>` +
+    "<table><tr><th>Product</th></tr>" + data.missing.map(m => `<tr><td>${m.product_name}</td></tr>`).join("") + "</table>";
+  if (data.wrong_product.length) html += `<h3><span class="pill pill-wrong">WRONG PRODUCT (${data.wrong_product.length})</span></h3>` +
+    "<table><tr><th>Expected</th><th>Similarity</th></tr>" +
+    data.wrong_product.map(w => `<tr><td>${w.expected_product_name}</td><td class="${simClass(w.similarity)}">${(w.similarity*100).toFixed(1)}%</td></tr>`).join("") + "</table>";
+  if (data.unexpected.length) html += `<h3><span class="pill pill-unexpected">UNEXPECTED (${data.unexpected.length})</span></h3>`;
+  document.getElementById("checkResultsWrap").innerHTML = html;
+}
+
+async function runDebugTrace() {
+  const fileInput = document.getElementById("traceImg");
+  const threshold = document.getElementById("traceThreshold").value;
+  if (!fileInput.files[0]) { alert("Select an image"); return; }
+
+  document.getElementById("traceOutput").innerText = "Running...";
+  const form = new FormData();
+  form.append("image", fileInput.files[0]);
+
+  const res = await fetch(`${API}/debug/trace?match_threshold=${threshold}`, { method: "POST", body: form });
+  const data = await res.json();
+  document.getElementById("traceOutput").innerText = JSON.stringify(data, null, 2);
+}
+
+loadReferenceProducts();
+</script>
+</body>
+</html>

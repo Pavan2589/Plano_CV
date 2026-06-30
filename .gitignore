@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.local
+
+# YOLO / model weights (large binaries, redownload via requirements/scripts instead)
+*.pt
+*.pth
+*.onnx
+yolov8n.pt
+
+# Debug / generated output
+debug/
+debug_detections.jpg
+*.jpg
+*.jpeg
+!static/**/*.jpg
+*.png
+!static/**/*.png
+
+# Uploads (local file storage for this minimal build)
+uploads/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Torch hub cache (if ever created locally instead of system cache)
+.cache/
