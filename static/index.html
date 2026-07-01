@@ -25,7 +25,9 @@
   .pill-wrong { background: #C0392B; }
   .pill-unexpected { background: #6B3FA0; }
   #refList { margin-top: 10px; font-size: 13px; }
-  .ref-item { display: inline-block; background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px 10px; margin: 3px; }
+  .ref-item { display: inline-flex; align-items: center; background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px 10px; margin: 3px; gap: 6px; }
+  .del-btn { background: none; border: none; color: #C0392B; cursor: pointer; font-size: 15px; padding: 0; line-height: 1; }
+  .del-btn:hover { color: #922B21; }
   .score { font-size: 28px; font-weight: bold; }
   pre { background: #1a1a2e; color: #d8e1ee; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 300px; }
 </style>
@@ -106,7 +108,16 @@ async function loadReferenceProducts() {
   const res = await fetch(`${API}/reference-products`);
   const products = await res.json();
   const el = document.getElementById("refList");
-  el.innerHTML = products.map(p => `<span class="ref-item">${p.name}</span>`).join(" ");
+  el.innerHTML = products.map(p =>
+    `<span class="ref-item">${p.name}<button class="del-btn" title="Delete" onclick="deleteReferenceProduct('${p.id}')">×</button></span>`
+  ).join(" ");
+}
+
+async function deleteReferenceProduct(id) {
+  if (!confirm("Delete this reference product?")) return;
+  const res = await fetch(`${API}/reference-products/${id}`, { method: "DELETE" });
+  if (!res.ok) { alert("Failed: " + await res.text()); return; }
+  loadReferenceProducts();
 }
 
 function drawBoxes(canvas, img, items, getBbox, getLabel, getColor) {
@@ -155,24 +166,33 @@ async function generatePlanogram() {
   lastPlanogramId = data.planogram_id;
   document.getElementById("planogramIdInput").value = data.planogram_id;
   document.getElementById("planoStatus").innerText =
-    `planogram_id=${data.planogram_id} | YOLO found ${data.total_yolo_detections} boxes | accepted ${data.accepted_count} | rejected ${data.rejected_count}`;
+    `planogram_id=${data.planogram_id} | YOLO found ${data.total_yolo_detections} boxes | accepted ${data.accepted_count} | rejected ${data.rejected_count} | rails detected at Y: ${data.rail_y_positions.join(", ")}`;
 
-  const img = new Image();
-  img.onload = () => {
-    drawBoxes(document.getElementById("planoCanvas"), img, data.expected_items,
-      it => it.bbox,
-      it => `${it.product_name} ${(it.similarity*100).toFixed(0)}%`,
-      it => it.similarity >= 0.75 ? "#2D7D46" : "#C55A11"
-    );
+  const annotatedImg = new Image();
+  annotatedImg.onload = () => {
+    const canvas = document.getElementById("planoCanvas");
+    canvas.width = annotatedImg.naturalWidth;
+    canvas.height = annotatedImg.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(annotatedImg, 0, 0);
   };
-  img.src = URL.createObjectURL(fileInput.files[0]);
+  annotatedImg.src = "data:image/jpeg;base64," + data.annotated_image_base64;
 
   const rows = data.expected_items.map(it =>
-    `<tr><td>${it.product_name}</td><td class="${simClass(it.similarity)}">${(it.similarity*100).toFixed(1)}%</td>
-     <td>[${it.bbox.map(n=>n.toFixed(0)).join(", ")}]</td></tr>`
+    `<tr>
+      <td>R${it.row} P${it.position}</td>
+      <td>${it.product_name}</td>
+      <td class="${it.similarity >= 0.75 ? 'sim-good' : 'sim-mid'}">
+        ${(it.similarity*100).toFixed(1)}%
+      </td>
+      <td>[${it.bbox.map(n=>n.toFixed(0)).join(", ")}]</td>
+    </tr>`
   ).join("");
   document.getElementById("planoTableWrap").innerHTML =
-    `<table><tr><th>Product</th><th>Similarity</th><th>BBox</th></tr>${rows}</table>`;
+    `<table>
+      <tr><th>Row / Position</th><th>Product</th><th>Similarity</th><th>BBox</th></tr>
+      ${rows}
+    </table>`;
 }
 
 async function runComplianceCheck() {
@@ -190,29 +210,62 @@ async function runComplianceCheck() {
   const data = await res.json();
 
   document.getElementById("checkStatus").innerText =
-    `Expected ${data.total_expected} | Detected on shelf ${data.total_detected_on_shelf}`;
-  document.getElementById("scoreDisplay").innerHTML = `<span class="score">${data.overall_score}%</span> overall match`;
+    `Expected ${data.total_expected} products | ` +
+    `Detected ${data.total_detected_on_shelf} on shelf | ` +
+    `Rails at Y: ${data.shelf_rail_positions.join(", ")}`;
 
-  const img = new Image();
-  img.onload = () => {
+  document.getElementById("scoreDisplay").innerHTML =
+    `<span class="score">${data.overall_score}%</span> overall &nbsp;|&nbsp; ` +
+    `<span style="font-size:18px">${data.count_score}%</span> count &nbsp;|&nbsp; ` +
+    `<span style="font-size:18px">${data.sequence_score}%</span> sequence`;
+
+  const annotatedImg = new Image();
+  annotatedImg.onload = () => {
     const canvas = document.getElementById("checkCanvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0);
+    canvas.width = annotatedImg.naturalWidth;
+    canvas.height = annotatedImg.naturalHeight;
+    canvas.getContext("2d").drawImage(annotatedImg, 0, 0);
   };
-  img.src = "data:image/jpeg;base64," + data.annotated_image_base64;
+  annotatedImg.src = "data:image/jpeg;base64," + data.annotated_image_base64;
 
   let html = "";
-  if (data.matched.length) html += `<h3><span class="pill pill-matched">MATCHED (${data.matched.length})</span></h3>` +
-    "<table><tr><th>Product</th><th>Similarity</th></tr>" +
-    data.matched.map(m => `<tr><td>${m.product_name}</td><td class="${simClass(m.similarity)}">${(m.similarity*100).toFixed(1)}%</td></tr>`).join("") + "</table>";
-  if (data.missing.length) html += `<h3><span class="pill pill-missing">MISSING (${data.missing.length})</span></h3>` +
-    "<table><tr><th>Product</th></tr>" + data.missing.map(m => `<tr><td>${m.product_name}</td></tr>`).join("") + "</table>";
-  if (data.wrong_product.length) html += `<h3><span class="pill pill-wrong">WRONG PRODUCT (${data.wrong_product.length})</span></h3>` +
-    "<table><tr><th>Expected</th><th>Similarity</th></tr>" +
-    data.wrong_product.map(w => `<tr><td>${w.expected_product_name}</td><td class="${simClass(w.similarity)}">${(w.similarity*100).toFixed(1)}%</td></tr>`).join("") + "</table>";
-  if (data.unexpected.length) html += `<h3><span class="pill pill-unexpected">UNEXPECTED (${data.unexpected.length})</span></h3>`;
+
+  if (data.count_violations.length) {
+    html += `<h3><span class="pill pill-wrong">COUNT VIOLATIONS (${data.count_violations.length})</span></h3>
+             <table><tr><th>Row</th><th>Product</th><th>Expected</th><th>Actual</th><th>Short By</th></tr>` +
+      data.count_violations.map(v =>
+        `<tr><td>R${v.row}</td><td>${v.product}</td>
+         <td>${v.expected_count}</td><td>${v.actual_count}</td>
+         <td>${v.short_by}</td></tr>`
+      ).join("") + "</table>";
+  }
+
+  if (data.sequence_violations.length) {
+    html += `<h3><span class="pill pill-wrong">SEQUENCE VIOLATIONS (${data.sequence_violations.length})</span></h3>
+             <table><tr><th>Row</th><th>Position</th><th>Type</th><th>Expected</th><th>Actual</th></tr>` +
+      data.sequence_violations.map(v =>
+        `<tr><td>R${v.row}</td><td>P${v.position}</td>
+         <td>${v.type}</td><td>${v.expected_product}</td>
+         <td>${v.actual_product || "-----"}</td></tr>`
+      ).join("") + "</table>";
+  }
+
+  if (data.unexpected_products.length) {
+    html += `<h3><span class="pill pill-unexpected">UNEXPECTED (${data.unexpected_products.length})</span></h3>`;
+  }
+
+  if (data.row_results.length) {
+    html += `<h3>Row Breakdown</h3>
+             <table><tr><th>Row</th><th>Count Score</th><th>Sequence Score</th><th>Counts Matched</th><th>Matches</th></tr>` +
+      data.row_results.map(r =>
+        `<tr><td>R${r.row}</td>
+         <td>${(r.count_score*100).toFixed(1)}%</td>
+         <td>${(r.sequence_score*100).toFixed(1)}%</td>
+         <td>${r.counts_matched ? "✅" : "❌"}</td>
+         <td>${r.matches}/${r.total_positions}</td></tr>`
+      ).join("") + "</table>";
+  }
+
   document.getElementById("checkResultsWrap").innerHTML = html;
 }
 

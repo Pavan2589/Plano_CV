@@ -52,6 +52,17 @@ class ResultAnnotator:
                 draw.text((legend_x + 10, legend_y + 25 + idx * line_height),
                           f"- {miss['product_name']}", fill="orange", font=font)
 
+        for tag in match_result.get("price_tags_detected", []):
+            bbox = tag["bbox"]
+            draw.rectangle(bbox, outline="cyan", width=2)
+
+        for group in match_result.get("missing_price_tags", []):
+            bbox = group["group_bbox"]
+            draw.rectangle(bbox, outline="orange", width=2)
+            label = f"{group['product_name']} - no price tag ({group['item_count']} units)"
+            label_x, label_y = bbox[0], max(0, bbox[3] + 4)
+            draw.text((label_x, label_y), label, fill="orange", font=font)
+
         return annotated
 
     def save(self, image: Image.Image, output_path: str) -> str:

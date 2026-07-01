@@ -9,6 +9,7 @@ vs every detected item is compared at once using a combined cost of
 import os
 import math
 import logging
+from collections import defaultdict
 from typing import List, Dict, Any
 
 import numpy as np
@@ -95,11 +96,20 @@ class HungarianMatcher:
         for i, exp in enumerate(expected_items):
             for j, det in enumerate(detected_items):
                 sim = calculate_similarity(exp["embedding"], det["embedding"])
-                embedding_cost = 1.0 - sim
-                ex, ey = exp_centers[i]
-                dx, dy = det_centers[j]
-                spatial_dist = math.sqrt((ex - dx) ** 2 + (ey - dy) ** 2)
-                cost_matrix[i][j] = self.alpha * embedding_cost + self.beta * spatial_dist
+
+                if sim < self.similarity_threshold:
+                    # Forbid this pairing entirely. Spatial proximity must
+                    # never be allowed to rescue a pairing whose product
+                    # identity is already wrong - this is what caused Lays
+                    # to incorrectly match against an expected Coke slot
+                    # when physically positioned nearby.
+                    cost_matrix[i][j] = SENTINEL_COST
+                else:
+                    embedding_cost = 1.0 - sim
+                    ex, ey = exp_centers[i]
+                    dx, dy = det_centers[j]
+                    spatial_dist = math.sqrt((ex - dx) ** 2 + (ey - dy) ** 2)
+                    cost_matrix[i][j] = self.alpha * embedding_cost + self.beta * spatial_dist
 
         row_idx, col_idx = linear_sum_assignment(cost_matrix)
 
@@ -154,3 +164,55 @@ class HungarianMatcher:
 
 
 matcher_instance = HungarianMatcher()
+
+
+def associate_price_tags(expected_items: List[Dict[str, Any]],
+                         price_tags: List[Dict[str, Any]],
+                         max_vertical_gap: float = 100.0) -> List[Dict[str, Any]]:
+    """
+    Groups expected_items by product_id (multiple facings of the same
+    product share ONE price tag on a real shelf), computes each group's
+    combined bounding region, and finds one price tag below that region.
+    Returns a list of per-GROUP results (not per-item).
+    """
+    groups = defaultdict(list)
+    for item in expected_items:
+        groups[item["product_id"]].append(item)
+
+    group_results = []
+    for product_id, items in groups.items():
+        group_x1 = min(i["bbox"][0] for i in items)
+        group_y1 = min(i["bbox"][1] for i in items)
+        group_x2 = max(i["bbox"][2] for i in items)
+        group_y2 = max(i["bbox"][3] for i in items)
+        group_center_x = (group_x1 + group_x2) / 2.0
+        group_width = group_x2 - group_x1
+
+        best_tag = None
+        best_distance = float("inf")
+
+        for tag in price_tags:
+            tx1, ty1, tx2, ty2 = tag["bbox"]
+            tag_center_x = (tx1 + tx2) / 2.0
+            tag_center_y = (ty1 + ty2) / 2.0
+
+            horizontal_ok = abs(tag_center_x - group_center_x) < (group_width / 2 + 30)
+            vertical_ok = (tag_center_y > group_y2) and \
+                          ((tag_center_y - group_y2) < max_vertical_gap)
+
+            if horizontal_ok and vertical_ok:
+                distance = tag_center_y - group_y2
+                if distance < best_distance:
+                    best_distance = distance
+                    best_tag = tag
+
+        group_results.append({
+            "product_id": product_id,
+            "product_name": items[0]["product_name"],
+            "item_count": len(items),
+            "group_bbox": [group_x1, group_y1, group_x2, group_y2],
+            "found_price_tag": best_tag is not None,
+            "price_tag_bbox": best_tag["bbox"] if best_tag else None,
+        })
+
+    return group_results
